@@ -16,9 +16,9 @@
 #
 ###########################################################################
 ############################################################################
-# configs/rtl8721csm/rdp/Make.defs
+# build/configs/imxrt1020-evk/reliability_test/Make.defs
 #
-#   Copyright (C) 2020 Gregory Nutt. All rights reserved.
+#   Copyright (C) 2018 Gregory Nutt. All rights reserved.
 #   Author: Gregory Nutt <gnutt@nuttx.org>
 #
 # Redistribution and use in source and binary forms, with or without
@@ -52,63 +52,57 @@
 
 include ${TOPDIR}/.config
 include ${TOPDIR}/tools/Config.mk
-ARCH_FAMILY = $(patsubst "%",%,$(CONFIG_ARCH_FAMILY))
-include ${TOPDIR}/arch/$(CONFIG_ARCH)/src/$(ARCH_FAMILY)/Toolchain.defs
+include ${TOPDIR}/arch/arm/src/armv7-m/Toolchain.defs
 
-LDSCRIPT = rlx8721d_img2_ns.ld
-
-ifeq ($(CONFIG_AMEBAD_TRUSTZONE),y)
-EXTRA_LIBS += ${TOPDIR}/board/rtl8721csm/src/libs/cmse_implib.a
-LINKLIBS=$(EXTRA_LIBS)
-endif
+MEM_LDSCRIPT = memory.ld
+ifeq ($(CONFIG_BUILD_PROTECTED),y)
+  ifeq ($(CONFIG_ARMV7M_DTCM),y)
+    KSPACE_LDSCRIPT = kernel-space-dtcm.ld
+  else
+    KSPACE_LDSCRIPT = kernel-space.ld
+  endif
+else # !BUILD_PROTECTED
+  ifeq ($(CONFIG_ARMV7M_DTCM),y)
+    KSPACE_LDSCRIPT = flash-dtcm.ld
+  else
+    KSPACE_LDSCRIPT = flash-ocram.ld
+  endif
+endif # BUILD_PROTECTED
 
 ifeq ($(WINTOOL),y)
   # Windows-native toolchains
   DIRLINK = $(TOPDIR)/tools/copydir.sh
   DIRUNLINK = $(TOPDIR)/tools/unlink.sh
   MKDEP = $(TOPDIR)/tools/mkwindeps.sh
-  ARCHINCLUDES = -I. -isystem "${shell cygpath -w $(TOPDIR)/include}" -isystem "${shell cygpath -w $(TOPDIR)/../framework/include}" -isystem "${shell cygpath -w $(TOPDIR)/../external/include}"
-  ARCHXXINCLUDES = -I. -isystem "${shell cygpath -w $(TOPDIR)/include}" -isystem "${shell cygpath -w $(TOPDIR)/../external/include}"
-  ARCHSCRIPT = -T "${shell cygpath -w $(TOPDIR)/../build/configs/$(CONFIG_ARCH_BOARD)/scripts/$(LDSCRIPT)}"
+  ARCHINCLUDES = -I. -isystem "${shell cygpath -w $(TOPDIR)/include}"
+  ARCHINCLUDES += -isystem "${shell cygpath -w $(TOPDIR)/net/lwip/src/include}"
+  ARCHXXINCLUDES = -I. -isystem "${shell cygpath -w $(TOPDIR)/include}" -isystem "${shell cygpath -w $(TOPDIR)/include/cxx}"
+  ARCHXXINCLUDES += -isystem "${shell cygpath -w $(TOPDIR)/net/lwip/src/include}"
+  ARCHSCRIPT = -T "${shell cygpath -w $(TOPDIR)/../build/configs/$(CONFIG_ARCH_BOARD)/scripts/$(LDSCRIPT1)}"
 else
   # Linux/Cygwin-native toolchain
   MKDEP = $(TOPDIR)/tools/mkdeps$(HOSTEXEEXT)
   ARCHINCLUDES = -I. -isystem $(TOPDIR)/include -isystem $(TOPDIR)/../framework/include -isystem $(TOPDIR)/../external/include
   ARCHINCLUDES += -isystem $(TOPDIR)/net/lwip/src/include
-  ARCHXXINCLUDES = -I. -isystem $(TOPDIR)/include -isystem $(TOPDIR)/../external/include
+  ARCHXXINCLUDES = -I. -isystem $(TOPDIR)/include -isystem $(TOPDIR)/include/cxx -isystem $(TOPDIR)/../external/include
   ARCHXXINCLUDES += -isystem $(TOPDIR)/net/lwip/src/include
-  ARCHSCRIPT = -T$(TOPDIR)/../build/configs/$(CONFIG_ARCH_BOARD)/scripts/$(LDSCRIPT)
+  ARCHSCRIPT = -L$(TOPDIR)/../build/configs/$(CONFIG_ARCH_BOARD)/scripts
+ifeq ($(CONFIG_AUTOGEN_MEMORY_LDSCRIPT),y)
+  ARCHSCRIPT += -T$(MEM_LDSCRIPT)
+endif
+  ARCHSCRIPT += -T$(KSPACE_LDSCRIPT)
+
 endif
 
 CC = $(CROSSDEV)gcc
 CXX = $(CROSSDEV)g++
 CPP = $(CROSSDEV)gcc -E
 LD = $(CROSSDEV)ld
-AS = $(CROSSDEV)as
 AR = $(CROSSDEV)ar rcs
 NM = $(CROSSDEV)nm
 OBJCOPY = $(CROSSDEV)objcopy
 OBJDUMP = $(CROSSDEV)objdump
-LD_ROM = $(CROSSDEV)ld
-CC_SIZE = $(CROSSDEV)size
-FROMELF = $(CROSSDEV)objcopy
-STRIP   = $(CROSSDEV)strip
-NM	= $(ARCROSSDEV)nm
-
-GDB = arm-none-eabi-gdb
-GDBR = arm-none-eabi-gdb
-READELF = arm-none-eabi-readelf
-
-REMOVE    = -rm -f
-REMOVEDIR = rm -rf
-MKDIR     = mkdir
-MAKE      = make
-CD        = cd
-COPY      = cp
-MOVE      = mv
-
-PREPENDTOOL		= $(COMPILATION_FILE_FOLDER)/prepend_header.sh
-CODE_ANALYZE_PYTHON=$(COMPILATION_FILE_FOLDER)/code_analyze.py
+STRIP = $(CROSSDEV)strip
 
 ARCHCCVERSION = ${shell $(CC) -v 2>&1 | sed -n '/^gcc version/p' | sed -e 's/^gcc version \([0-9\.]\)/\1/g' -e 's/[-\ ].*//g' -e '1q'}
 ARCHCCMAJOR = ${shell echo $(ARCHCCVERSION) | cut -d'.' -f1}
@@ -126,14 +120,14 @@ ifeq ($(CONFIG_FRAME_POINTER),y)
   ARCHOPTIMIZATION += -fno-omit-frame-pointer -mapcs -mno-sched-prolog
 endif
 
-ARCHCFLAGS = -fno-builtin -mcpu=cortex-m33 -mfpu=fpv5-sp-d16
-ARCHCXXFLAGS = -fno-builtin -fexceptions -mcpu=cortex-m33 -mfpu=fpv5-sp-d16
+ARCHCFLAGS = -fno-builtin -mcpu=cortex-m7 -fno-common $(ARCHCPUFLAGS)
+ARCHCXXFLAGS = -fno-builtin -fexceptions -mcpu=cortex-m7 $(ARCHCPUFLAGS)
 ifeq ($(QUICKBUILD),y)
 ARCHWARNINGS = -Wall -Werror -Wstrict-prototypes -Wshadow -Wundef -Wno-implicit-function-declaration -Wno-unused-function -Wno-unused-but-set-variable
 ARCHWARNINGSXX = -Wall -Werror -Wshadow -Wundef
 else
 ARCHWARNINGS = -Wall -Wstrict-prototypes -Wshadow -Wundef -Wno-implicit-function-declaration -Wno-unused-function -Wno-unused-but-set-variable
-ARCHWARNINGSXX = -Wall -Wshadow -Wundef
+ARCHWARNINGSXX = -Wall -Werror -Wshadow -Wundef
 # only version 4.9 supports color diagnostics
 ifeq "$(ARCHMAJOR)" "4"
 ifeq "$(ARCHMINOR)" "9"
@@ -146,68 +140,46 @@ endif
 ARCHDEFINES =
 ARCHPICFLAGS = -fpic -msingle-pic-base -mpic-register=r10
 
-CFLAGS = $(ARCHCFLAGS) $(ARCHWARNINGS) $(ARCHOPTIMIZATION) $(ARCHCPUFLAGS) $(ARCHINCLUDES) $(ARCHDEFINES) $(EXTRADEFINES) -pipe
+CFLAGS = $(ARCHCFLAGS) $(ARCHWARNINGS) $(ARCHOPTIMIZATION) $(ARCHINCLUDES) $(ARCHDEFINES) $(EXTRADEFINES) -pipe -ffunction-sections -fdata-sections
 CPICFLAGS = $(ARCHPICFLAGS) $(CFLAGS)
-CXXFLAGS = $(ARCHCXXFLAGS) $(ARCHWARNINGSXX) $(ARCHOPTIMIZATION) $(ARCHCPUFLAGS) $(ARCHXXINCLUDES) $(ARCHDEFINES) $(EXTRADEFINES) -pipe
+CXXFLAGS = $(ARCHCXXFLAGS) $(ARCHWARNINGSXX) $(ARCHOPTIMIZATION) $(ARCHXXINCLUDES) $(ARCHDEFINES) $(EXTRADEFINES) -pipe
+ifeq ($(CONFIG_LIBCXX),y)
+CXXFLAGS += -DCONFIG_WCHAR_BUILTIN
+endif
 CXXPICFLAGS = $(ARCHPICFLAGS) $(CXXFLAGS)
 CPPFLAGS = $(ARCHINCLUDES) $(ARCHDEFINES) $(EXTRADEFINES)
 AFLAGS = $(CFLAGS) -D__ASSEMBLY__
 
-##########################################################################################################################################
-CFLAGS += -march=armv8-m.main+dsp
-CFLAGS += -mthumb
-CFLAGS += -mcmse
-#CFLAGS += -mfloat-abi=hard
-#CFLAGS += -mfpu=fpv5-sp-d16
+# ELF module definitions
 
+CELFFLAGS = $(CFLAGS) -mlong-calls # --target1-abs
+CXXELFFLAGS = $(CXXFLAGS) -mlong-calls # --target1-abs
 
-#CFLAGS += -g
-#CFLAGS += -gdwarf-3
-#CFLAGS += -nodefaultlibs
-#CFLAGS += -O2
-#CFLAGS += -D__FPU_PRESENT
+LDELFFLAGS = -r -e main
 
-#CFLAGS += -fstack-usage
-#CFLAGS += -fdata-sections
-#CFLAGS += -nostartfiles
-#CFLAGS += -nostdlib
-#CFLAGS += -Wpointer-arith
-#CFLAGS += -Wno-write-strings
-#CFLAGS += -Wno-maybe-uninitialized
-#CFLAGS += --save-temps
-#CFLAGS += -c
-#CFLAGS += -MMD
-
-#CFLAGS += -Wextra
-
-#CFLAGS += $(IFLAGS)
-CFLAGS += -DCONFIG_PLATFORM_8721D
-CFLAGS += -DCONFIG_USE_MBEDTLS_ROM_ALG
-CFLAGS += -DCONFIG_FUNCION_O0_OPTIMIZE
-CFLAGS += -DDM_ODM_SUPPORT_TYPE=32
-CFLAGS += -DSTD_PRINTF
-CFLAGS += -DCONFIG_PLATFORM_TIZENRT_OS=1
-CFLAGS += -DARM_CORE_CM4
-CFLAGS += -DCONFIG_ARMV8M_CMNVECTOR
-
-#LDFLAGS += --wrap=printf
-
-##########################################################################################################################################
+ifeq ($(WINTOOL),y)
+	LDELFFLAGS += -T "${shell cygpath -w $(TOPDIR)/binfmt/libelf/gnu-elf.ld}"
+else
+	LDELFFLAGS += -T $(TOPDIR)/binfmt/libelf/gnu-elf.ld
+endif
 
 ASMEXT = .S
 OBJEXT = .o
 LIBEXT = .a
-EXEEXT = .axf
+EXEEXT =
 
 ifeq ($(CONFIG_DEBUG_SYMBOLS),y)
   LDFLAGS += -g
 endif
+
+LDFLAGS += --gc-sections
 
 HOSTCC = gcc
 HOSTINCLUDES = -I.
 HOSTCFLAGS = -Wall -Wstrict-prototypes -Wshadow -Wundef -g -pipe
 HOSTLDFLAGS =
 
-define MAKE_BOARD_SPECIFIC_BIN
-  $(TOPDIR)/../build/configs/rtl8721csm/rtl8721csm_make_bin.sh
+define DOWNLOAD
+  $(TOPDIR)/../build/configs/$(CONFIG_ARCH_BOARD)/$(CONFIG_ARCH_BOARD)_download.sh $(1) $(2) $(3) $(4) $(5) $(6)
 endef
+
