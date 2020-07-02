@@ -65,45 +65,18 @@ extern sq_queue_t g_sem_list;
  *	 This function loads and executes binary.
  *
  ****************************************************************************/
-static int binary_manager_load_binary(int bin_idx, char *path, binary_header_t *header_data)
+static int binary_manager_load_binary(int bin_idx, char *path, load_attr_t *load_attr)
 {
 	int ret;
 	int retry_count;
-	load_attr_t load_attr;
-#ifdef CONFIG_OPTIMIZE_APP_RELOAD_TIME
-	struct binary_s *binp;
-#endif
-
-	strncpy(load_attr.bin_name, header_data->bin_name, BIN_NAME_MAX);
-	load_attr.bin_size = header_data->bin_size;
-	load_attr.compression_type = header_data->compression_type;
-	load_attr.ram_size = header_data->bin_ramsize;
-	load_attr.stack_size = header_data->bin_stacksize;
-	load_attr.priority = header_data->bin_priority;
-	load_attr.offset = CHECKSUM_SIZE + header_data->header_size;
-	strncpy(load_attr.bin_ver, header_data->bin_ver, BIN_VER_MAX);
-#ifdef CONFIG_OPTIMIZE_APP_RELOAD_TIME
-	binp = BIN_LOADINFO(bin_idx);
-	/* If current version is different from version to be loaded, Clean up backup data */
-	if (binp && strncmp(BIN_VER(bin_idx), header_data->bin_ver, strlen(BIN_VER(bin_idx)) + 1)) {
-		binp->reload = false;
-		binfmt_exit(binp);
-		binp = NULL;
-		BIN_LOADINFO(bin_idx) = NULL;
-	}
-	load_attr.binp = binp;
-#endif
-	bmvdbg("BIN[%d] %s %d %d\n", bin_idx, path, load_attr.bin_size, load_attr.offset);
 
 	retry_count = 0;
 	while (retry_count < BINMGR_LOADING_TRYCNT) {
-		ret = load_binary(bin_idx, path, &load_attr);
+		ret = load_binary(bin_idx, path, load_attr);
 		if (ret > 0) {
 			bmvdbg("Load '%s' success! pid = %d\n", path, ret);
 			/* Set the data in table from header */
-			BIN_LOAD_ATTR(bin_idx) = load_attr;
-			strncpy(BIN_KERNEL_VER(bin_idx), header_data->kernel_ver, KERNEL_VER_MAX);
-			strncpy(BIN_NAME(bin_idx), header_data->bin_name, BIN_NAME_MAX);
+			BIN_LOAD_ATTR(bin_idx) = *load_attr;
 			bmvdbg("BIN TABLE[%d] %d %d %s %s %s\n", bin_idx, BIN_SIZE(bin_idx), BIN_RAMSIZE(bin_idx), BIN_VER(bin_idx), BIN_KERNEL_VER(bin_idx), BIN_NAME(bin_idx));
 			return OK;
 		} else if (errno == ENOMEM) {
@@ -114,6 +87,7 @@ static int binary_manager_load_binary(int bin_idx, char *path, binary_header_t *
 		bmdbg("Load '%s' %dth fail, errno %d\n", BIN_NAME(bin_idx), retry_count, errno);
 	}
 #ifdef CONFIG_OPTIMIZE_APP_RELOAD_TIME
+	struct binary_s *binp = load_attr->binp;
 	if (binp) {
 		/* If we are here it means that reload has failed. So perform cleanup */
 		((struct binary_s *)binp)->reload = false;
@@ -142,8 +116,12 @@ static int binary_manager_load(int bin_idx)
 	int latest_idx;
 	int version;
 	int valid_bin_count;
+	load_attr_t load_attr;
 	char filepath[FILES_PER_BIN][CONFIG_PATH_MAX];
 	binary_header_t header_data[FILES_PER_BIN];
+#ifdef CONFIG_OPTIMIZE_APP_RELOAD_TIME
+	struct binary_s *binp;
+#endif
 
 	if (bin_idx < 0) {
 		bmdbg("Invalid bin idx %d\n", bin_idx);
@@ -156,59 +134,89 @@ static int binary_manager_load(int bin_idx)
 		return ERROR;
 	}
 
-	bin_name = BIN_NAME(bin_idx);
-	name_len = strlen(bin_name);
+#ifdef CONFIG_OPTIMIZE_APP_RELOAD_TIME
+	binp = BIN_LOADINFO(bin_idx);
+	if (binp) {
+		valid_bin_count = 1;
+		latest_idx = 0;
+		snprintf(filepath[latest_idx], CONFIG_PATH_MAX, "%s/%s_%s", BINARY_DIR_PATH, BIN_NAME(bin_idx), BIN_VER(bin_idx));
+	} else
+#endif
+	{
+		bin_name = BIN_NAME(bin_idx);
+		name_len = strlen(bin_name);
 
-	latest_ver = -1;
-	latest_idx = -1;
-	valid_bin_count = 0;
+		latest_ver = -1;
+		latest_idx = -1;
+		valid_bin_count = 0;
 
-	/* Open a directory for user binaries, BINARY_DIR_PATH */
-	dirp = opendir(BINARY_DIR_PATH);
-	if (!dirp) {
-		bmdbg("Failed to open a directory, %s\n", BINARY_DIR_PATH);
-		return ERROR;
-	}
-
-	file_idx = 0;
-
-	bmvdbg("Open a directory, %s\n", BINARY_DIR_PATH);
-
-	/* Read each directory entry */
-	for (;;) {
-		struct dirent *entryp = readdir(dirp);
-		if (!entryp) {
-			/* Finished with this directory */
-			break;
+		/* Open a directory for user binaries, BINARY_DIR_PATH */
+		dirp = opendir(BINARY_DIR_PATH);
+		if (!dirp) {
+			bmdbg("Failed to open a directory, %s\n", BINARY_DIR_PATH);
+			return ERROR;
 		}
-		/* Read and Verify a binary file */
-		if (DIRENT_ISFILE(entryp->d_type) \
-			&& !strncmp(entryp->d_name, bin_name, name_len) && entryp->d_name[name_len] == '_') {
-			snprintf(filepath[file_idx], CONFIG_PATH_MAX, "%s/%s", BINARY_DIR_PATH, entryp->d_name);
-			ret = binary_manager_read_header(filepath[file_idx], &header_data[file_idx]);
-			if (ret == OK) {
-				valid_bin_count++;
-				version = (int)atoi(header_data[file_idx].bin_ver);
-				bmvdbg("Found valid header in version %d\n", version);
-				if (version > latest_ver) {
-					latest_ver = version;
-					latest_idx = file_idx;
-					bmvdbg("Latest version %d, idx %d\n", latest_ver, latest_idx);
-				}
+
+		file_idx = 0;
+
+		bmvdbg("Open a directory, %s\n", BINARY_DIR_PATH);
+
+		/* Read each directory entry */
+		for (;;) {
+			struct dirent *entryp = readdir(dirp);
+			if (!entryp) {
+				/* Finished with this directory */
+				break;
 			}
-			file_idx++;
+			/* Read and Verify a binary file */
+			if (DIRENT_ISFILE(entryp->d_type) \
+				&& !strncmp(entryp->d_name, bin_name, name_len) && entryp->d_name[name_len] == '_') {
+				snprintf(filepath[file_idx], CONFIG_PATH_MAX, "%s/%s", BINARY_DIR_PATH, entryp->d_name);
+				ret = binary_manager_read_header(filepath[file_idx], &header_data[file_idx]);
+				if (ret == OK) {
+					valid_bin_count++;
+					version = (int)atoi(header_data[file_idx].bin_ver);
+					bmvdbg("Found valid header in version %d\n", version);
+					if (version > latest_ver) {
+						latest_ver = version;
+						latest_idx = file_idx;
+						bmvdbg("Latest version %d, idx %d\n", latest_ver, latest_idx);
+					}
+				}
+				file_idx++;
+			}
+		}
+		closedir(dirp);
+
+		if (valid_bin_count == 0 || latest_idx < 0) {
+			bmdbg("No valid binary in fs : %s\n", BIN_NAME(bin_idx));
+			return ERROR;
 		}
 	}
-	closedir(dirp);
-
-	if (valid_bin_count == 0) {
-		bmdbg("No valid binary in fs : %s\n", BIN_NAME(bin_idx));
-		return ERROR;
-	}
-
 	do {
-		ret = binary_manager_load_binary(bin_idx, filepath[latest_idx], &header_data[latest_idx]);
-		if (ret == OK) {
+#ifdef CONFIG_OPTIMIZE_APP_RELOAD_TIME
+		if (!binp)
+#endif
+		{
+			strncpy(load_attr.bin_name, header_data[latest_idx].bin_name, BIN_NAME_MAX);
+			load_attr.bin_size = header_data[latest_idx].bin_size;
+			load_attr.compression_type = header_data[latest_idx].compression_type;
+			load_attr.ram_size = header_data[latest_idx].bin_ramsize;
+			load_attr.stack_size = header_data[latest_idx].bin_stacksize;
+			load_attr.priority = header_data[latest_idx].bin_priority;
+			load_attr.offset = CHECKSUM_SIZE + header_data[latest_idx].header_size;
+			strncpy(load_attr.bin_ver, header_data[latest_idx].bin_ver, BIN_VER_MAX);
+		}
+#ifdef CONFIG_OPTIMIZE_APP_RELOAD_TIME
+		else {
+			load_attr = BIN_LOAD_ATTR(bin_idx);
+		}
+		load_attr.binp = binp;
+#endif
+		ret = binary_manager_load_binary(bin_idx, filepath[latest_idx], &load_attr);
+		if (ret == OK) {			
+			strncpy(BIN_KERNEL_VER(bin_idx), header_data[latest_idx].kernel_ver, KERNEL_VER_MAX);
+			strncpy(BIN_NAME(bin_idx), header_data[latest_idx].bin_name, BIN_NAME_MAX);
 			return BINMGR_OK;
 		}
 		if (--valid_bin_count > 0) {
@@ -298,27 +306,46 @@ static int binary_manager_terminate_binary(int bin_idx)
 			return ERROR;
 		}
 		/* Release all kernel semaphores held by the threads in binary */
-		binary_manager_release_binary_sem(binid);
+		binary_manager_release_binary_sem(bin_idx);
 		BIN_STATE(bin_idx) = BINARY_RUNNING;
 	}
 
 	/* Terminate all children created by a binary */
-	ntcb = tcb = btcb->bin_flink;
+	ntcb = tcb = BIN_RTLIST(bin_idx);
 	while (tcb) {
 		ntcb = tcb->bin_flink;
 		if (need_recovery) {
 			task_recover(tcb);
 		}
-		ret = task_terminate_unloaded(tcb);
-		if (ret < 0) {
-			bmdbg("Failed to terminate task of binary %d\n", binid);
+		if (tcb != btcb) {
+			ret = task_terminate_unloaded(tcb);
+			if (ret < 0) {
+				bmdbg("Failed to terminate task of binary %d\n", binid);
+			}
+		}
+		tcb = ntcb;
+	}
+
+	ntcb = tcb = BIN_NRTLIST(bin_idx);
+	while (tcb) {
+		ntcb = tcb->bin_flink;
+		if (need_recovery) {
+			task_recover(tcb);
+		}
+		if (tcb != btcb) {
+			ret = task_terminate_unloaded(tcb);
+			if (ret < 0) {
+				bmdbg("Failed to terminate task of binary %d\n", binid);
+			}
 		}
 		tcb = ntcb;
 	}
 
 #ifdef CONFIG_OPTIMIZE_APP_RELOAD_TIME
-	binp = BIN_LOADINFO(bin_idx);
-	binp->reload = true;
+	if (BIN_STATE(bin_idx) == BINARY_FAULT) {
+		binp = BIN_LOADINFO(bin_idx);
+		binp->reload = true;
+	}
 #endif
 
 	/* Finally, unload binary */
@@ -328,6 +355,9 @@ static int binary_manager_terminate_binary(int bin_idx)
 		return ERROR;
 	}
 	bmvdbg("Unload binary %s\n", BIN_NAME(bin_idx));
+
+	BIN_RTLIST(bin_idx) = NULL;
+	BIN_NRTLIST(bin_idx) = NULL;
 
 	/* Notify 'Unloaded' state to other binaries */
 	binary_manager_notify_state_changed(bin_idx, BINARY_UNLOADED);
@@ -352,17 +382,9 @@ static int binary_manager_terminate_binary(int bin_idx)
  *   None
  *
  ****************************************************************************/
-static int binary_manager_reload(int binid)
+static int binary_manager_reload(int bin_idx)
 {
 	int ret;
-	int bin_idx;
-
-	/* Check whether it is registered in binary manager */
-	bin_idx = binary_manager_get_index_with_binid(binid);
-	if (bin_idx < 0) {
-		bmdbg("binary %s is not registered\n", binid);
-		return BINMGR_NOT_FOUND;
-	}
 
 	/* Terminate binary */
 	ret = binary_manager_terminate_binary(bin_idx);
@@ -472,9 +494,9 @@ static int loading_thread(int argc, char *argv[])
 			break;
 		}
 		/* [2] binary id for reloading */
-		int binid = (int)atoi(argv[2]);
+		int bin_idx = (int)atoi(argv[2]);
 #ifdef CONFIG_SUPPORT_COMMON_BINARY
-		if (binid == BM_BINID_LIBRARY) {
+		if (bin_idx == BM_BINID_LIBRARY) {
 			/* Reload common library and all binaries */
 			char libname[CONFIG_NAME_MAX];
 			snprintf(libname, CONFIG_NAME_MAX, "%s%s", CONFIG_COMMON_BINARY_PATH, CONFIG_COMMON_BINARY_NAME);
@@ -483,19 +505,18 @@ static int loading_thread(int argc, char *argv[])
 				return BINMGR_OPERATION_FAIL;
 			}
 
-			int bin_idx;
+			int bidx;
 			int bin_count = binary_manager_get_ucount();
 
-			for (bin_idx = 1; bin_idx <= bin_count; bin_idx++) {
-				ret = binary_manager_reload(BIN_ID(bin_idx));
-
+			for (bidx = 1; bidx <= bin_count; bidx++) {
+				ret = binary_manager_reload(bidx);
 				if (ret < 0) {
 					return ret;
 				}
 			}
 		} else
 #endif
-			ret = binary_manager_reload(binid);
+			ret = binary_manager_reload(bin_idx);
 		break;
 #endif
 	default:
@@ -516,7 +537,7 @@ static int loading_thread(int argc, char *argv[])
  *	 This function releases all kernel semaphores held by the threads in binary.
  *
  ****************************************************************************/
-void binary_manager_release_binary_sem(int binid)
+void binary_manager_release_binary_sem(int bin_idx)
 {
 	sem_t *sem;
 	irqstate_t flags;
@@ -532,7 +553,7 @@ void binary_manager_release_binary_sem(int binid)
 		holder = &sem->holder;
 #endif
 		{
-			if (holder && holder->htcb && holder->htcb->group && holder->htcb->group->tg_binid == binid) {
+			if (holder && holder->htcb && holder->htcb->group && holder->htcb->group->tg_binidx == bin_idx) {
 				/* Increase semcount and release itself from holder */
 				sem->semcount++;
 				sem_releaseholder(sem, holder->htcb);
@@ -578,7 +599,7 @@ int binary_manager_read_header(char *path, binary_header_t *header_data)
 	}
 
 	/* Verify header data */
-	if (header_data->bin_type != BIN_TYPE_ELF) {
+	if (header_data->bin_type != BIN_TYPE_ELF || atoi(header_data->bin_ver) <= 0) {
 		need_unlink = true;
 		bmdbg("Invalid header data : headersize %d, binsize %d, ramsize %d, bintype %d\n", header_data->header_size, header_data->bin_size, header_data->bin_ramsize, header_data->bin_type);
 		goto errout_with_fd;
