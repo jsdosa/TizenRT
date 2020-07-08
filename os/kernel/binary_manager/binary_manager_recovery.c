@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <debug.h>
 #include <stdlib.h>
+#include <string.h>
 #include <queue.h>
 #include <errno.h>
 #include <semaphore.h>
@@ -39,9 +40,11 @@
 #ifdef CONFIG_SUPPORT_COMMON_BINARY
 #include <tinyara/binfmt/binfmt.h>
 #endif
+#include <tinyara/wdog.h>
 
 #include "task/task.h"
 #include "sched/sched.h"
+#include "semaphore/semaphore.h"
 #include "binary_manager.h"
 
 /****************************************************************************
@@ -204,7 +207,6 @@ void binary_manager_recover_userfault(uint32_t assert_pc)
 
 	tcb = this_task();
 	if (tcb != NULL && tcb->group != NULL) {
-		tcb->lockcount = 0;
 		bin_idx = tcb->group->tg_binidx;
 		/* Exclude realtime task/pthreads from scheduling */
 		binary_manager_deactivate_rtthreads(bin_idx);
@@ -225,7 +227,7 @@ void binary_manager_recover_userfault(uint32_t assert_pc)
 
 			/* Unblock fault message sender */
 			if (g_faultmsg_sender->task_state == TSTATE_WAIT_FIN) {
-				up_recovery_unblock_task(g_faultmsg_sender);
+				up_unblock_task_without_savereg(g_faultmsg_sender);
 			}
 			return;
 		}

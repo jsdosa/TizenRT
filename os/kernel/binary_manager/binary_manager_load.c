@@ -39,6 +39,7 @@
 #include <tinyara/mm/mm.h>
 #include <tinyara/sched.h>
 #include <tinyara/init.h>
+#include <tinyara/kthread.h>
 
 #ifdef CONFIG_OPTIMIZE_APP_RELOAD_TIME
 #include <tinyara/binfmt/binfmt.h>
@@ -84,7 +85,7 @@ static int binary_manager_load_binary(int bin_idx, char *path, load_attr_t *load
 			usleep(1000);
 		}
 		retry_count++;
-		bmdbg("Load '%s' %dth fail, errno %d\n", BIN_NAME(bin_idx), retry_count, errno);
+		lldbg("Load '%s' %dth fail, errno %d\n", BIN_NAME(bin_idx), retry_count, errno);
 	}
 #ifdef CONFIG_OPTIMIZE_APP_RELOAD_TIME
 	struct binary_s *binp = load_attr->binp;
@@ -556,7 +557,9 @@ void binary_manager_release_binary_sem(int bin_idx)
 			if (holder && holder->htcb && holder->htcb->group && holder->htcb->group->tg_binidx == bin_idx) {
 				/* Increase semcount and release itself from holder */
 				sem->semcount++;
-				sem_releaseholder(sem, holder->htcb);
+				sem_freeholder(sem, holder);
+				/* And after releasing the kernel sem, there can be a task which waits that sem. So unblock the waiting task. */
+				sem_unblock_task(sem, holder->htcb);
 			}
 		}
 		sem = sq_next(sem);
