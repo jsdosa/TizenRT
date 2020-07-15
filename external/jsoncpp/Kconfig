@@ -1,0 +1,11 @@
+#
+# For a description of the syntax of this configuration file,
+# see kconfig-language at https://www.kernel.org/doc/Documentation/kbuild/kconfig-language.txt
+#
+
+config EXTERNAL_JSONCPP
+	bool "JSON CPP"
+	default n
+	depends on HAVE_CXXINITIALIZE
+	---help---
+		Enables the JSON CPP
